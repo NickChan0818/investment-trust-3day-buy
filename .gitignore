@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.pyo
+debug_html/
+trust_3day_buy_*.csv
