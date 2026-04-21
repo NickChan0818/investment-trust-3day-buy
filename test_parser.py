@@ -5,7 +5,7 @@ Run with: python3 test_parser.py
 """
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import requests
 from bs4 import BeautifulSoup
@@ -189,7 +189,7 @@ class TestSafeGet(unittest.TestCase):
 
         self.assertIs(result, success_response)
         self.assertEqual(session.get.call_count, 2)
-        self.assertEqual(mock_sleep.call_args_list, [unittest.mock.call(2)])
+        self.assertEqual(mock_sleep.call_args_list, [call(2)])
 
 
 if __name__ == "__main__":
