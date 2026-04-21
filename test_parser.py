@@ -147,7 +147,7 @@ class TestIsConsecutiveBuy(unittest.TestCase):
 
 
 class TestSafeGet(unittest.TestCase):
-    def test_uses_default_empty_headers(self):
+    def test_uses_session_default_headers_when_none_provided(self):
         session = MagicMock()
         response = MagicMock(status_code=200)
         session.get.return_value = response
