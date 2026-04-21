@@ -5,12 +5,16 @@ Run with: python3 test_parser.py
 """
 
 import unittest
+from unittest.mock import MagicMock, call, patch
+
+import requests
 from bs4 import BeautifulSoup
 from scraper import (
     _parse_table_for_trust,
     _parse_labeled_rows,
     _to_int,
     is_consecutive_buy,
+    safe_get,
 )
 
 
@@ -140,6 +144,52 @@ class TestIsConsecutiveBuy(unittest.TestCase):
 
     def test_empty(self):
         self.assertFalse(is_consecutive_buy([], 3))
+
+
+class TestSafeGet(unittest.TestCase):
+    def test_uses_session_default_headers_when_none_provided(self):
+        session = MagicMock()
+        response = MagicMock(status_code=200)
+        session.get.return_value = response
+
+        result = safe_get(session, "https://example.com")
+
+        self.assertIs(result, response)
+        session.get.assert_called_once_with(
+            "https://example.com",
+            timeout=20,
+            headers={},
+        )
+
+    def test_passes_extra_headers_to_session_get(self):
+        session = MagicMock()
+        response = MagicMock(status_code=200)
+        session.get.return_value = response
+        extra_headers = {"Referer": "https://example.com/rank/"}
+
+        result = safe_get(session, "https://example.com/page", extra_headers=extra_headers)
+
+        self.assertIs(result, response)
+        session.get.assert_called_once_with(
+            "https://example.com/page",
+            timeout=20,
+            headers=extra_headers,
+        )
+
+    @patch("scraper.time.sleep")
+    def test_retries_on_request_exception(self, mock_sleep):
+        session = MagicMock()
+        success_response = MagicMock(status_code=200)
+        session.get.side_effect = [
+            requests.RequestException("temporary failure"),
+            success_response,
+        ]
+
+        result = safe_get(session, "https://example.com", retries=3)
+
+        self.assertIs(result, success_response)
+        self.assertEqual(session.get.call_count, 2)
+        self.assertEqual(mock_sleep.call_args_list, [call(2)])
 
 
 if __name__ == "__main__":
