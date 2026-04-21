@@ -1,0 +1,49 @@
+name: 每日投信連三天買進篩選
+
+on:
+  schedule:
+    # 每天 06:00 UTC = 台灣時間 14:00（收盤後約 30 分鐘）
+    - cron: '0 6 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run screener
+        run: python3 scraper.py
+
+      - name: Move results to data/
+        run: |
+          if ls trust_3day_buy_*.csv 2>/dev/null; then
+            mv trust_3day_buy_*.csv data/
+          else
+            echo "無符合條件的股票，略過儲存。"
+          fi
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "No new data to commit."
+          else
+            git commit -m "data: 每日篩選結果 $(date -u +'%Y-%m-%d')"
+            git push
+          fi

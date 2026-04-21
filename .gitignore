@@ -3,3 +3,4 @@ __pycache__/
 *.pyo
 debug_html/
 trust_3day_buy_*.csv
+!data/trust_3day_buy_*.csv
