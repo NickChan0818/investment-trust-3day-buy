@@ -26,8 +26,16 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
 }
 
 
@@ -38,19 +46,24 @@ HEADERS = {
 def make_session() -> requests.Session:
     s = requests.Session()
     s.headers.update(HEADERS)
-    # Prime cookies by hitting the homepage
     try:
+        s.headers.update({"Sec-Fetch-Site": "none"})
         s.get(BASE_URL, timeout=15)
-        time.sleep(0.3)
+        time.sleep(0.5)
+        s.headers.update({
+            "Referer": BASE_URL + "/",
+            "Sec-Fetch-Site": "same-origin",
+        })
     except Exception:
         pass
     return s
 
 
-def safe_get(session: requests.Session, url: str, retries: int = 3) -> requests.Response | None:
+def safe_get(session: requests.Session, url: str, retries: int = 3,
+             extra_headers: dict | None = None) -> requests.Response | None:
     for attempt in range(1, retries + 1):
         try:
-            resp = session.get(url, timeout=20)
+            resp = session.get(url, timeout=20, headers=extra_headers or {})
             if resp.status_code == 200:
                 return resp
             print(f"    HTTP {resp.status_code} for {url}")
@@ -71,7 +84,7 @@ def fetch_ranking(session: requests.Session) -> list[dict]:
     Returns a list of dicts: {code, name, buy_volume}
     """
     print(f"  GET {RANK_URL}")
-    resp = safe_get(session, RANK_URL)
+    resp = safe_get(session, RANK_URL, extra_headers={"Referer": BASE_URL + "/rank/"})
     if resp is None:
         return []
 
