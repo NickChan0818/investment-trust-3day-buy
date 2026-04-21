@@ -6,7 +6,6 @@
 3. 篩選出投信連續買進 3 天（含今日）的股票
 """
 
-import csv
 import re
 import sys
 import time
@@ -22,6 +21,7 @@ BASE_URL = "https://pchome.megatime.com.tw"
 RANK_URL = f"{BASE_URL}/rank/sto4/ock04.html"
 REQUEST_DELAY = 0.8   # seconds between requests (be polite)
 CONSECUTIVE_DAYS = 3
+TOP_N = 30  # 取排行榜前幾名
 
 HEADERS = {
     "User-Agent": (
@@ -116,6 +116,8 @@ def fetch_ranking(session: requests.Session) -> list[dict]:
             continue
         seen.add(code)
 
+        if code.startswith("00"):  # 排除 ETF
+            continue
         name = a.get_text(strip=True)
         buy_volume = _extract_nearby_number(a)
         stocks.append({"code": code, "name": name, "buy_volume": buy_volume})
@@ -138,6 +140,78 @@ def _extract_nearby_number(tag) -> int | None:
         except ValueError:
             pass
     return best
+
+
+TWSE_API = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY"
+YAHOO_API = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+
+
+def fetch_prices(code: str, n: int = CONSECUTIVE_DAYS) -> list[float]:
+    """
+    取得近 n 個交易日的收盤價（由新到舊）。
+    先試上市 TWSE；若查無資料再試上櫃 Yahoo Finance (.TWO)。
+    """
+    today = datetime.now()
+    prices: list[float] = []
+
+    # --- 上市：TWSE 月查詢（一次抓整月） ---
+    for delta_month in range(2):
+        month = today.month - delta_month
+        year = today.year
+        if month <= 0:
+            month += 12
+            year -= 1
+        date_str = f"{year}{month:02d}01"
+        try:
+            resp = requests.get(
+                TWSE_API,
+                params={"date": date_str, "stockNo": code, "response": "json"},
+                verify=False,
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            if data.get("stat") != "OK":
+                continue
+            fields = data.get("fields", [])
+            close_idx = next((i for i, f in enumerate(fields) if "收盤" in f), None)
+            if close_idx is None:
+                continue
+            rows = data.get("data", [])
+            for row in reversed(rows):
+                try:
+                    prices.append(float(row[close_idx].replace(",", "")))
+                except (ValueError, IndexError):
+                    pass
+                if len(prices) >= n:
+                    return prices[:n]
+        except Exception:
+            pass
+    if prices:
+        return prices[:n]
+
+    # --- 上櫃：Yahoo Finance (.TWO) ---
+    try:
+        resp = requests.get(
+            YAHOO_API.format(ticker=f"{code}.TWO"),
+            params={"range": f"{n + 7}d", "interval": "1d"},
+            verify=False,
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if resp.status_code == 200:
+            result = resp.json().get("chart", {}).get("result", [])
+            if result:
+                closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
+                # closes 由舊到新；取末尾 n 筆，再反轉成新到舊
+                valid = [c for c in closes if c is not None]
+                prices = list(reversed(valid[-n:]))
+    except Exception:
+        pass
+
+    return prices[:n]
+
 
 
 # ---------------------------------------------------------------------------
@@ -303,17 +377,36 @@ def is_consecutive_buy(values: list[int], days: int = CONSECUTIVE_DAYS) -> bool:
 # Output helpers
 # ---------------------------------------------------------------------------
 
+def _trading_dates(n: int) -> list[str]:
+    """回傳最近 n 個交易日（週一到週五）的日期字串，由新到舊。"""
+    from datetime import timedelta
+    dates: list[str] = []
+    d = datetime.now().date()
+    while len(dates) < n:
+        if d.weekday() < 5:  # 0=Mon, 4=Fri
+            dates.append(d.strftime("%m/%d"))
+        d -= timedelta(days=1)
+    return dates
+
+
 def print_results(results: list[dict]) -> None:
     if not results:
         print("\n本日無符合條件的股票（投信連續3天買進）\n")
         return
 
-    print(f"\n{'代碼':<8} {'名稱':<16} {'今日買超(張)':>12} "
-          f"{'D1淨':>8} {'D2淨':>8} {'D3淨':>8}")
-    print("-" * 68)
+    td = _trading_dates(CONSECUTIVE_DAYS)
+    h1, h2, h3 = f"D1({td[0]})", f"D2({td[1]})", f"D3({td[2]})"
+    p1w = max(len(h1), 6)
+    p2w = max(len(h2), 6)
+    p3w = max(len(h3), 6)
+
+    print()
+    print(f"| 代碼 | 名稱 | {h1} | {h2} | {h3} | 收盤({td[0]}) | 收盤({td[1]}) | 收盤({td[2]}) |")
+    print(f"|------|------|{'-'*(p1w+1)}:|{'-'*(p2w+1)}:|{'-'*(p3w+1)}:|-------:|-------:|-------:|")
     for r in results:
-        print(f"{r['code']:<8} {r['name']:<16} {_fmt(r['buy_volume']):>12} "
-              f"{_fmt(r['d1_net']):>8} {_fmt(r['d2_net']):>8} {_fmt(r['d3_net']):>8}")
+        print(f"| {r['code']} | {r['name']} "
+              f"| {_fmt(r['d1_net'])} | {_fmt(r['d2_net'])} | {_fmt(r['d3_net'])} "
+              f"| {_fmtprice(r.get('p1'), r.get('p2'))} | {_fmtprice(r.get('p2'), r.get('p3'))} | {_fmtf(r.get('p3'))} |")
 
 
 def _fmt(v) -> str:
@@ -322,17 +415,48 @@ def _fmt(v) -> str:
     return f"{v:,}"
 
 
+def _fmtf(v) -> str:
+    if v is None:
+        return "-"
+    return f"{v:.1f}"
+
+
+def _fmtprice(v, prev) -> str:
+    """格式化收盤價，附帶與前一日的漲跌幅。"""
+    if v is None:
+        return "-"
+    s = f"{v:.1f}"
+    if prev is not None and prev != 0:
+        pct = (v - prev) / prev * 100
+        sign = "+" if pct >= 0 else ""
+        s += f"({sign}{pct:.0f}%)"
+    return s
+
+
 def save_csv(results: list[dict]) -> str:
     if not results:
         return ""
     ts = datetime.now().strftime("%Y%m%d_%H%M")
-    fname = f"trust_3day_buy_{ts}.csv"
-    fieldnames = ["code", "name", "buy_volume", "d1_net", "d2_net", "d3_net"]
-    with open(fname, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for r in results:
-            writer.writerow({k: r.get(k, "") for k in fieldnames})
+    fname = f"trust_3day_buy_{ts}.md"
+    td = _trading_dates(CONSECUTIVE_DAYS)
+    h1, h2, h3 = f"D1({td[0]})", f"D2({td[1]})", f"D3({td[2]})"
+    lines = [
+        f"# 投信連續買進 {CONSECUTIVE_DAYS} 天篩選結果",
+        f"",
+        f"資料日期：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"來源：{RANK_URL}",
+        f"",
+        f"| 代碼 | 名稱 | {h1} | {h2} | {h3} | 收盤({td[0]}) | 收盤({td[1]}) | 收盤({td[2]}) |",
+        f"|------|------|{'-'*(len(h1)+1)}:|{'-'*(len(h2)+1)}:|{'-'*(len(h3)+1)}:|-------:|-------:|-------:|",
+    ]
+    for r in results:
+        lines.append(
+            f"| {r['code']} | {r['name']} "
+            f"| {_fmt(r.get('d1_net'))} | {_fmt(r.get('d2_net'))} | {_fmt(r.get('d3_net'))} "
+            f"| {_fmtprice(r.get('p1'), r.get('p2'))} | {_fmtprice(r.get('p2'), r.get('p3'))} | {_fmtf(r.get('p3'))} |"
+        )
+    with open(fname, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
     return fname
 
 
@@ -351,11 +475,11 @@ def main() -> None:
 
     # Step 1 – ranking
     print("\n[1/3] 取得投信買超排行榜...")
-    ranked = fetch_ranking(session)
+    ranked = fetch_ranking(session)[:TOP_N]
     if not ranked:
         print("ERROR: 排行榜資料為空。請確認網路連線或網頁結構是否改變。")
         sys.exit(1)
-    print(f"      找到 {len(ranked)} 檔股票")
+    print(f"      找到 {len(ranked)} 檔股票（取前{TOP_N}）")
 
     # Step 2 – per-stock history
     print(f"\n[2/3] 逐一查詢各股票三大法人歷史（共 {len(ranked)} 檔）...")
@@ -367,6 +491,7 @@ def main() -> None:
         history = fetch_trust_history(session, code)
 
         if is_consecutive_buy(history, CONSECUTIVE_DAYS):
+            prices = fetch_prices(code)
             results.append({
                 "code": code,
                 "name": name,
@@ -374,6 +499,9 @@ def main() -> None:
                 "d1_net": history[0] if len(history) > 0 else None,
                 "d2_net": history[1] if len(history) > 1 else None,
                 "d3_net": history[2] if len(history) > 2 else None,
+                "p1": prices[0] if len(prices) > 0 else None,
+                "p2": prices[1] if len(prices) > 1 else None,
+                "p3": prices[2] if len(prices) > 2 else None,
             })
             print(f"✓  {history[:CONSECUTIVE_DAYS]}")
         else:
