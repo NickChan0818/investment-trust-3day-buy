@@ -28,7 +28,6 @@ HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
 }
 
 

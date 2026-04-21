@@ -14,7 +14,6 @@ import time
 import sys
 from pathlib import Path
 
-import requests
 from bs4 import BeautifulSoup
 
 from scraper import BASE_URL, RANK_URL, SUBPAGES, make_session, safe_get
