@@ -50,12 +50,13 @@ def make_session() -> requests.Session:
         s.headers.update({"Sec-Fetch-Site": "none"})
         s.get(BASE_URL, timeout=15)
         time.sleep(0.5)
+    except Exception:
+        pass
+    finally:
         s.headers.update({
             "Referer": BASE_URL + "/",
             "Sec-Fetch-Site": "same-origin",
         })
-    except Exception:
-        pass
     return s
 
 
