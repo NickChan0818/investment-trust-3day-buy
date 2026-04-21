@@ -12,8 +12,11 @@ import sys
 import time
 from datetime import datetime
 
+import urllib3
 import requests
 from bs4 import BeautifulSoup
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BASE_URL = "https://pchome.megatime.com.tw"
 RANK_URL = f"{BASE_URL}/rank/sto4/ock04.html"
@@ -46,6 +49,7 @@ HEADERS = {
 def make_session() -> requests.Session:
     s = requests.Session()
     s.headers.update(HEADERS)
+    s.verify = False  # 目標網站憑證缺少 Subject Key Identifier，停用 SSL 驗證
     try:
         s.headers.update({"Sec-Fetch-Site": "none"})
         s.get(BASE_URL, timeout=15)
@@ -60,13 +64,22 @@ def make_session() -> requests.Session:
     return s
 
 
+def _needs_is_check(resp: requests.Response) -> bool:
+    """偵測網站回傳的 is_check 表單重導向（JS 自動提交）。"""
+    return len(resp.text) < 1000 and "is_check" in resp.text and "submit_form" in resp.text
+
+
 def safe_get(session: requests.Session, url: str, retries: int = 3,
              extra_headers: dict | None = None) -> requests.Response | None:
     for attempt in range(1, retries + 1):
         try:
             resp = session.get(url, timeout=20, headers=extra_headers or {})
             if resp.status_code == 200:
-                return resp
+                if _needs_is_check(resp):
+                    # 模擬 JS 表單自動提交
+                    resp = session.post(url, data={"is_check": "1"}, timeout=20)
+                if resp.status_code == 200:
+                    return resp
             print(f"    HTTP {resp.status_code} for {url}")
         except requests.RequestException as exc:
             print(f"    Request error ({attempt}/{retries}): {exc}")
@@ -93,8 +106,8 @@ def fetch_ranking(session: requests.Session) -> list[dict]:
     stocks = []
     seen = set()
 
-    # Links to stock pages look like /stock/sto1/sid2353.html
-    for a in soup.find_all("a", href=re.compile(r"/stock/sto\d/sid(\d+)\.html")):
+    # Links to stock pages look like /stock/sid2353.html
+    for a in soup.find_all("a", href=re.compile(r"/stock/sid(\d+)\.html")):
         m = re.search(r"sid(\d+)\.html", a["href"])
         if not m:
             continue
@@ -132,7 +145,8 @@ def _extract_nearby_number(tag) -> int | None:
 # ---------------------------------------------------------------------------
 
 # Candidate sub-pages to look for institutional data (most to least likely)
-SUBPAGES = ["sto3", "sto1", "sto4"]
+# sto1 = 籌碼分析（含投信持股逐日表格）
+SUBPAGES = ["sto1", "sto3", "sto4"]
 
 
 def fetch_trust_history(session: requests.Session, code: str) -> list[int]:
@@ -163,45 +177,64 @@ def _parse_trust_net(soup: BeautifulSoup) -> list[int]:
     Try multiple strategies to extract 投信 net buy/sell values from a page.
     Returns values newest-first (matches table row order on most sites).
     """
-    # Strategy A: find a <table> whose column headers contain '投信'
+    # Strategy A: find the table that contains '投信持股' heading
+    # (sto1 籌碼分析 page: the span is inside the same table as the data)
+    for heading in soup.find_all(string=re.compile("投信持股")):
+        table = heading.find_parent("table")
+        if table:
+            result = _parse_table_for_trust(table, require_trust_label=False)
+            if result:
+                return result
+
+    # Strategy B: find a <table> whose column headers contain '投信'
     for table in soup.find_all("table"):
-        result = _parse_table_for_trust(table)
+        result = _parse_table_for_trust(table, require_trust_label=True)
         if result:
             return result
 
-    # Strategy B: look for a <tr> or <div> labelled '投信' with numbers beside it
+    # Strategy C: look for a <tr> or <div> labelled '投信' with numbers beside it
     return _parse_labeled_rows(soup)
 
 
-def _parse_table_for_trust(table) -> list[int]:
+def _parse_table_for_trust(table, require_trust_label: bool = False) -> list[int]:
     """
     Inside a table, find columns labelled '投信' and extract net values.
     Handles two layouts:
-      - Single '投信淨買賣' / '投信買超' column
+      - Single '投信淨買賣' / '投信買超' / '買賣超張數' column
       - Separate '投信買進' and '投信賣出' columns (net = buy - sell)
+    When require_trust_label=False, also matches tables whose parent section
+    is labelled '投信持股' (e.g. sto1 籌碼分析 page).
     """
     rows = table.find_all("tr")
     if len(rows) < 2:
         return []
 
-    # Collect header text for every column
-    header_row = rows[0]
-    headers = [th.get_text(strip=True) for th in header_row.find_all(["th", "td"])]
-
+    # Try each row as the header (handles tables where row[0] is a title row)
+    header_row_idx = None
     net_col = buy_col = sell_col = None
-    for i, h in enumerate(headers):
-        if "投信" in h and any(k in h for k in ("淨", "買超", "賣超")):
-            net_col = i
-        elif "投信" in h and "買" in h:
-            buy_col = i
-        elif "投信" in h and "賣" in h:
-            sell_col = i
+    for row_idx, row in enumerate(rows):
+        cells = row.find_all(["th", "td"])
+        headers = [c.get_text(strip=True) for c in cells]
+        n = b = s = None
+        for i, h in enumerate(headers):
+            if "投信" in h and any(k in h for k in ("淨", "買超", "賣超")):
+                n = i
+            elif "投信" in h and "買" in h:
+                b = i
+            elif "投信" in h and "賣" in h:
+                s = i
+            elif not require_trust_label and "買賣超" in h and n is None:
+                n = i
+        if n is not None or (b is not None and s is not None):
+            header_row_idx = row_idx
+            net_col, buy_col, sell_col = n, b, s
+            break
 
-    if net_col is None and not (buy_col is not None and sell_col is not None):
+    if header_row_idx is None:
         return []
 
     values = []
-    for row in rows[1:]:
+    for row in rows[header_row_idx + 1:]:
         cells = row.find_all(["td", "th"])
         try:
             if net_col is not None and net_col < len(cells):
