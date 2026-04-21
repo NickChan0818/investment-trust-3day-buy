@@ -147,7 +147,7 @@ class TestIsConsecutiveBuy(unittest.TestCase):
 
 
 class TestSafeGet(unittest.TestCase):
-    def test_uses_empty_headers_when_extra_headers_omitted(self):
+    def test_uses_default_empty_headers(self):
         session = MagicMock()
         response = MagicMock(status_code=200)
         session.get.return_value = response
@@ -177,7 +177,7 @@ class TestSafeGet(unittest.TestCase):
         )
 
     @patch("scraper.time.sleep")
-    def test_retries_after_request_exception_until_success(self, mock_sleep):
+    def test_retries_on_request_exception(self, mock_sleep):
         session = MagicMock()
         success_response = MagicMock(status_code=200)
         session.get.side_effect = [
