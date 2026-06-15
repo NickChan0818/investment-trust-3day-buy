@@ -1,9 +1,6 @@
 name: 每日投信連三天買進篩選
 
 on:
-  schedule:
-    # 每天 06:00 UTC = 台灣時間 14:00（收盤後約 30 分鐘）
-    - cron: '0 6 * * 1-5'
   workflow_dispatch:
 
 permissions:
